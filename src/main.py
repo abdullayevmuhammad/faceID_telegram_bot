@@ -8,6 +8,8 @@ from aiogram.client.default import DefaultBotProperties
 from bot.handlers import start
 from bot.handlers import register_user
 from bot.handlers import admin_panel
+from bot.handlers import profile
+from bot.handlers import update_photo, menu_actions
 
 BOT_TOKEN = '8363824683:AAEzNvWQox8ALDQI3MKemZVpK3IvGNhtfgE'
 # from bot.config import BOT_TOKEN
@@ -25,18 +27,21 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # # Handlers
-    # dp.include_router(start.router)
-    # dp.include_router(register_user.router)
+    # Handlers
+    dp.include_router(start.router)
+    dp.include_router(menu_actions.router)
+    dp.include_router(register_user.router)
     # dp.include_router(check_user.router)
-    # dp.include_router(admin_panel.router)
+    dp.include_router(admin_panel.router)
+    dp.include_router(profile.router)
+    dp.include_router(update_photo.router)
 
     logging.info("🤖 Bot started successfully...")
     await bot.delete_webhook(drop_pending_updates=True)
 
-    dp.include_router(start.router)
-    dp.include_router(register_user.router)
-    dp.include_router(admin_panel.router)
+    # dp.include_router(start.router)
+    # dp.include_router(register_user.router)
+    # dp.include_router(admin_panel.router)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

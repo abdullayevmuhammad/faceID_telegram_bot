@@ -3,7 +3,7 @@ from aiogram import Router
 from aiogram.types import Message
 from aiogram.filters import Command
 from bot.config import ADMIN_ID
-from utils.storage import user_storage
+from utils.storage_db import user_storage_db  # async DB-backed storage
 
 router = Router()
 
@@ -15,22 +15,22 @@ def is_admin(user_id: int) -> bool:
 
 @router.message(Command("admin"))
 async def admin_panel(message: Message):
-    """Admin statistics panel"""
+    """Admin statistics panel (async DB)"""
     if not is_admin(message.from_user.id):
         await message.answer("🚫 Sizda bu buyruqdan foydalanish huquqi yo'q.")
         return
 
-    # Get statistics
-    total_users = user_storage.get_total_users()
-    today_users = user_storage.get_today_users()
-    duplicates = len(user_storage.find_duplicate_passports())
+    # Get statistics from database
+    total_users = await user_storage_db.get_total_users()
+    today_users = await user_storage_db.get_today_users()
+    duplicates = await user_storage_db.find_duplicate_passports()
 
     text = (
         "📊 <b>Face ID Tizimi Statistikasi</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👥 Jami foydalanuvchilar: <b>{total_users}</b>\n"
         f"🗓️ Bugun qo'shilganlar: <b>{today_users}</b>\n"
-        f"🔁 Duplicate foydalanuvchilar: <b>{duplicates}</b>\n\n"
+        f"🔁 Duplicate foydalanuvchilar: <b>{len(duplicates)}</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "💡 <i>Qo'shimcha buyruqlar:</i>\n"
         "/users_list - Barcha foydalanuvchilar\n"
@@ -42,44 +42,49 @@ async def admin_panel(message: Message):
 
 @router.message(Command("users_list"))
 async def list_users(message: Message):
-    """List all registered users"""
+    """List all registered users (DB)"""
     if not is_admin(message.from_user.id):
         await message.answer("🚫 Sizda bu buyruqdan foydalanish huquqi yo'q.")
         return
 
-    users = user_storage.get_all_users()
+    users = await user_storage_db.get_all_users()
 
     if not users:
         await message.answer("📭 Hozircha ro'yxatdan o'tgan foydalanuvchilar yo'q.")
         return
 
-    text = "👥 <b>Ro'yxatdan o'tgan foydalanuvchilar:</b>\n\n"
+    parts = []
+    header = "👥 <b>Ro'yxatdan o'tgan foydalanuvchilar:</b>\n\n"
+    current = header
 
     for i, user in enumerate(users, 1):
-        text += (
-            f"{i}. <b>{user['full_name']}</b>\n"
-            f"   🪪 {user['passport']}\n"
-            f"   🆔 {user['telegram_id']}\n"
-            f"   📅 {user['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        created = user.get("created_at")
+        created_str = created.strftime('%d.%m.%Y %H:%M') if created else "—"
+        current += (
+            f"{i}. <b>{user.get('full_name','—')}</b>\n"
+            f"   🪪 {user.get('passport','—')}\n"
+            f"   🆔 {user.get('telegram_id','—')}\n"
+            f"   📅 {created_str}\n\n"
         )
+        # split if current too long
+        if len(current) > 3500:
+            parts.append(current)
+            current = ""
 
-    # Split message if too long
-    if len(text) > 4000:
-        parts = [text[i:i + 4000] for i in range(0, len(text), 4000)]
-        for part in parts:
-            await message.answer(part)
-    else:
-        await message.answer(text)
+    if current:
+        parts.append(current)
+
+    for part in parts:
+        await message.answer(part)
 
 
 @router.message(Command("user_info"))
 async def user_info(message: Message):
-    """Get specific user info"""
+    """Get specific user info (DB)"""
     if not is_admin(message.from_user.id):
         await message.answer("🚫 Sizda bu buyruqdan foydalanish huquqi yo'q.")
         return
 
-    # Extract telegram_id from command
     parts = message.text.split()
     if len(parts) < 2:
         await message.answer(
@@ -95,23 +100,36 @@ async def user_info(message: Message):
         await message.answer("❌ Telegram ID raqam bo'lishi kerak!")
         return
 
-    user = user_storage.get_user_by_telegram_id(telegram_id)
+    user = await user_storage_db.get_user_by_telegram_id(telegram_id)
 
     if not user:
         await message.answer(f"❌ Telegram ID <code>{telegram_id}</code> topilmadi.")
         return
 
+    # Normalize fields safely
+    full_name = user.get("full_name", "—")
+    telegram_id = user.get("telegram_id", "—")
+    passport = user.get("passport", "—")
+    photo_id = user.get("photo_id", "—")
+    role = user.get("role", "user")
+    is_active = user.get("is_active", True)
+    created_at = user.get("created_at")
+    updated_at = user.get("updated_at")
+
+    created_str = created_at.strftime('%d.%m.%Y %H:%M') if created_at else "—"
+    updated_str = updated_at.strftime('%d.%m.%Y %H:%M') if updated_at else "—"
+
     text = (
         "👤 <b>Foydalanuvchi ma'lumotlari:</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Ism:</b> {user['full_name']}\n"
-        f"<b>Telegram ID:</b> <code>{user['telegram_id']}</code>\n"
-        f"<b>Pasport:</b> <code>{user['passport']}</code>\n"
-        f"<b>Rasm ID:</b> <code>{user['photo_id']}</code>\n"
-        f"<b>Rol:</b> {user['role']}\n"
-        f"<b>Status:</b> {'✅ Faol' if user['is_active'] else '❌ Nofaol'}\n"
-        f"<b>Ro'yxatdan o'tgan:</b> {user['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
-        f"<b>Yangilangan:</b> {user['updated_at'].strftime('%d.%m.%Y %H:%M')}\n"
+        f"<b>Ism:</b> {full_name}\n"
+        f"<b>Telegram ID:</b> <code>{telegram_id}</code>\n"
+        f"<b>Pasport:</b> <code>{passport}</code>\n"
+        f"<b>Rasm ID:</b> <code>{photo_id}</code>\n"
+        f"<b>Rol:</b> {role}\n"
+        f"<b>Status:</b> {'✅ Faol' if is_active else '❌ Nofaol'}\n"
+        f"<b>Ro'yxatdan o'tgan:</b> {created_str}\n"
+        f"<b>Yangilangan:</b> {updated_str}\n"
     )
 
     await message.answer(text)

@@ -5,7 +5,7 @@ from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from bot.states.update_states import UpdateUser
-from utils.storage import user_storage
+from utils.storage_db import user_storage_db
 from bot.keyboards.user_keyboards import cancel_keyboard
 
 router = Router()
@@ -14,7 +14,7 @@ router = Router()
 @router.message(Command("update"))
 async def start_update(message: Message, state: FSMContext):
     """Start profile update"""
-    user = user_storage.get_user_by_telegram_id(message.from_user.id)
+    user = await user_storage_db.get_user_by_telegram_id(message.from_user.id)
 
     if not user:
         await message.answer(
@@ -46,7 +46,7 @@ async def cancel_update(message: Message, state: FSMContext):
 @router.message(UpdateUser.waiting_for_update, F.photo)
 async def update_photo(message: Message, state: FSMContext):
     """Update user photo"""
-    user = user_storage.get_user_by_telegram_id(message.from_user.id)
+    user = await user_storage_db.get_user_by_telegram_id(message.from_user.id)
 
     if not user:
         await message.answer("❌ Xatolik yuz berdi!")
@@ -56,11 +56,11 @@ async def update_photo(message: Message, state: FSMContext):
     # Get new photo
     new_photo_id = message.photo[-1].file_id
 
-    # Update user
-    user_storage.add_user(
-        telegram_id=user['telegram_id'],
-        full_name=user['full_name'],
-        passport=user['passport'],
+    # Update user in DB
+    await user_storage_db.add_or_update_user(
+        telegram_id=user["telegram_id"],
+        full_name=user["full_name"],
+        passport=user["passport"],
         photo_id=new_photo_id
     )
 
@@ -68,3 +68,31 @@ async def update_photo(message: Message, state: FSMContext):
         "✅ <b>Rasm muvaffaqiyatli yangilandi!</b>\n\n"
         "📸 Yangi rasmingiz saqlandi.",
         reply_markup=None
+    )
+    await state.clear()
+
+
+@router.message(UpdateUser.waiting_for_update, F.text.regexp(r"^[A-Z]{2}\d{7}$"))
+async def update_passport(message: Message, state: FSMContext):
+    """Update passport number"""
+    user = await user_storage_db.get_user_by_telegram_id(message.from_user.id)
+
+    if not user:
+        await message.answer("❌ Xatolik yuz berdi!")
+        await state.clear()
+        return
+
+    new_passport = message.text.strip().upper()
+
+    await user_storage_db.add_or_update_user(
+        telegram_id=user["telegram_id"],
+        full_name=user["full_name"],
+        passport=new_passport,
+        photo_id=user["photo_id"]
+    )
+
+    await message.answer(
+        f"✅ Pasport muvaffaqiyatli yangilandi!\n\n🪪 Yangi pasport: <code>{new_passport}</code>",
+        reply_markup=None
+    )
+    await state.clear()

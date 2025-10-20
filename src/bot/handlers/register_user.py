@@ -1,121 +1,109 @@
 # src/bot/handlers/register_user.py
+import os
+from pathlib import Path
 import re
+from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from bot.states.register_states import RegisterUser
-from utils.storage import user_storage
-from bot.keyboards.user_keyboards import cancel_keyboard
+from utils.storage_db import user_storage_db
+from utils.faceapi import send_to_faceid
+import asyncio
 
 router = Router()
 
+PHOTOS_DIR = Path("tmp_photos")
+PHOTOS_DIR.mkdir(exist_ok=True)
 
+
+# 1️⃣ /register bosqichi
 @router.message(Command("register"))
 async def start_register(message: Message, state: FSMContext):
-    """Start registration process"""
-
-    # Check if already registered
-    if user_storage.user_exists(message.from_user.id):
-        user = user_storage.get_user_by_telegram_id(message.from_user.id)
-        await message.answer(
-            f"ℹ️ Siz allaqachon ro'yxatdan o'tgansiz!\n\n"
-            f"👤 Ism: <b>{user['full_name']}</b>\n"
-            f"🪪 Pasport: <b>{user['passport']}</b>\n\n"
-            "Ma'lumotlarni yangilash uchun /update buyrug'idan foydalaning."
-        )
-        return
-
-    await message.answer(
-        "📝 <b>Ro'yxatdan o'tish</b>\n\n"
-        "🪪 Pasport seriya raqamingizni kiriting:\n"
-        "Format: <code>AB1234567</code>\n\n"
-        "Masalan: AA1234567, AB9876543",
-        reply_markup=cancel_keyboard()
-    )
+    await message.answer("🪪 Pasport seriyangizni kiriting: (masalan: AB1234567)")
     await state.set_state(RegisterUser.waiting_for_passport)
 
 
-@router.message(RegisterUser.waiting_for_passport, F.text == "❌ Bekor qilish")
-async def cancel_registration(message: Message, state: FSMContext):
-    """Cancel registration"""
-    await state.clear()
-    await message.answer("❌ Ro'yxatdan o'tish bekor qilindi.", reply_markup=None)
-
-
+# 2️⃣ Pasport qabul qilish bosqichi
 @router.message(RegisterUser.waiting_for_passport)
 async def process_passport(message: Message, state: FSMContext):
-    """Process passport number"""
     passport = message.text.strip().upper()
 
-    # Validate format: 2 letters + 7 digits
     if not re.match(r"^[A-Z]{2}\d{7}$", passport):
-        await message.answer(
-            "❌ Noto'g'ri format!\n\n"
-            "To'g'ri format: <code>AB1234567</code>\n"
-            "(2 ta lotin harfi + 7 ta raqam)\n\n"
-            "Qaytadan kiriting:"
-        )
-        return
-
-    # Check if passport already exists
-    if user_storage.passport_exists(passport):
-        await message.answer(
-            "⚠️ Bu pasport raqami allaqachon ro'yxatdan o'tgan!\n\n"
-            "Agar bu sizning pasportingiz bo'lsa, admin bilan bog'laning."
-        )
-        await state.clear()
+        await message.answer("❌ Noto‘g‘ri format! Masalan: AB1234567")
         return
 
     await state.update_data(passport=passport)
-    await message.answer(
-        "✅ Pasport qabul qilindi!\n\n"
-        "📸 Endi yuzingizning <b>aniq rasmini</b> yuboring:\n\n"
-        "⚠️ <i>Rasm sifatli va yaxshi yoritilgan bo'lishi kerak!</i>",
-        reply_markup=cancel_keyboard()
-    )
+    await message.answer("✅ Pasport qabul qilindi! Endi rasm yuboring 📸")
     await state.set_state(RegisterUser.waiting_for_photo)
 
 
-@router.message(RegisterUser.waiting_for_photo, F.text == "❌ Bekor qilish")
-async def cancel_photo(message: Message, state: FSMContext):
-    """Cancel photo upload"""
-    await state.clear()
-    await message.answer("❌ Ro'yxatdan o'tish bekor qilindi.", reply_markup=None)
-
-
+# 3️⃣ Rasm qabul qilish bosqichi
 @router.message(RegisterUser.waiting_for_photo, F.photo)
 async def process_photo(message: Message, state: FSMContext):
-    """Process user photo and complete registration"""
     user_data = await state.get_data()
     passport = user_data.get("passport")
-    photo_id = message.photo[-1].file_id  # Get highest quality photo
+    photo_id = message.photo[-1].file_id
 
-    # Save user to storage
-    user = user_storage.add_user(
+    file = await message.bot.get_file(photo_id)
+    local_path = PHOTOS_DIR / f"{passport}_{message.from_user.id}.jpg"
+    await message.bot.download_file(file.file_path, destination=str(local_path))
+
+    # Ma’lumotni DB ga saqlash
+    user = await user_storage_db.add_or_update_user(
         telegram_id=message.from_user.id,
         full_name=message.from_user.full_name or "Unknown",
         passport=passport,
-        photo_id=photo_id
+        photo_id=photo_id,
+        photo_path=str(local_path)
     )
 
-    await message.answer(
-        "🎉 <b>Tabriklaymiz!</b>\n\n"
-        "✅ Siz muvaffaqiyatli ro'yxatdan o'tdingiz!\n\n"
-        f"👤 Ism: <b>{user['full_name']}</b>\n"
-        f"🪪 Pasport: <b>{user['passport']}</b>\n"
-        f"📅 Sana: <b>{user['created_at'].strftime('%d.%m.%Y %H:%M')}</b>\n\n"
-        "✨ Endi siz tizimdan foydalanishingiz mumkin!",
-        reply_markup=None
-    )
+    # Tez javob
+    await message.answer("📸 Rasm qabul qilindi! Ma'lumotlaringiz qayta ishlanmoqda...")
+
+    # ✅ Fon rejimida FaceID yuborish
+    task = asyncio.create_task(send_faceid_and_update_db(message, user, passport, local_path))
+
+    def _task_done_callback(t: asyncio.Task):
+        try:
+            exc = t.exception()
+            if exc:
+                print("⚠️ Background task raised:", repr(exc))
+        except asyncio.CancelledError:
+            print("ℹ️ Background task cancelled")
+
+    task.add_done_callback(_task_done_callback)
 
     await state.clear()
 
 
-@router.message(RegisterUser.waiting_for_photo)
-async def wrong_photo_format(message: Message):
-    """Handle non-photo messages"""
-    await message.answer(
-        "❌ Iltimos, <b>rasm</b> yuboring!\n\n"
-        "Matn yoki boshqa fayl emas, faqat rasm."
-    )
+# 4️⃣ FaceID yuborish va holatni DBda yangilash
+async def send_faceid_and_update_db(message: Message, user: dict, passport: str, local_path: Path):
+    """Fon rejimida FaceID APIga yuborish va DB holatini yangilash"""
+    try:
+        api_resp = await send_to_faceid(passport, str(local_path))
+
+        if api_resp.get("status") in ("success", "ok", True):
+            await user_storage_db.update_status(
+                user["id"], synced=True, faceid_status="ok"
+            )
+            await message.answer("✅ Siz tizimga muvaffaqiyatli qo'shildingiz!")
+        else:
+            await user_storage_db.update_status(
+                user["id"], synced=False, faceid_status="error"
+            )
+            await message.answer("⚠️ FaceID serverida xatolik. Keyinroq qayta sinab ko‘riladi.")
+
+    except Exception as e:
+        print("❌ FaceID xatolik:", e)
+        await user_storage_db.update_status(
+            user["id"], synced=False, faceid_status="error"
+        )
+        await message.answer("⚠️ FaceID serveriga ulanishda xatolik. Keyinroq urinib ko‘ring.")
+
+    # Faylni o‘chirish
+    try:
+        local_path.unlink(missing_ok=True)
+    except Exception as e:
+        print("⚠️ Faylni o‘chirishda xatolik:", e)

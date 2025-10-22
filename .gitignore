@@ -1,3 +1,4 @@
 /tmp_photos
 .env
 /.venv
+tmp_photos/

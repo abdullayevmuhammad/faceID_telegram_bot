@@ -4,6 +4,14 @@ from utils.faceapi import get_users_stats
 from bot.keyboards.admin_keyboards import admin_main_keyboard
 
 router = Router()
+@router.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    """Admin panelni ochish"""
+    text = (
+        "👨‍💼 <b>Admin panel</b>\n\n"
+        "Quyidagi bo‘limlardan birini tanlang 👇"
+    )
+    await message.answer(text, reply_markup=admin_main_keyboard())
 
 @router.callback_query(F.data == "users_stats")
 async def users_stats(callback: types.CallbackQuery):

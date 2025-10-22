@@ -16,7 +16,7 @@ async def button_register(message: Message, state: FSMContext):
 # 🔹 Tugma: Profilim
 @router.message(F.text.in_(["👤 Profilim", "👤 Mening profilim"]))
 async def button_profile(message: Message):
-    await profile.show_profile(message)
+    await profile.profile_cmd(message)
 
 
 # 🔹 Tugma: Ma’lumotni yangilash

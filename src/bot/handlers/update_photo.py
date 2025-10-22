@@ -1,98 +1,56 @@
-# src/bot/handlers/update_photo.py
-import re
 from aiogram import Router, F
-from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
+from pathlib import Path
+from utils.faceapi import find_user_in_all_devices, update_face_photo_all
 from bot.states.update_states import UpdateUser
-from utils.storage_db import user_storage_db
 from bot.keyboards.user_keyboards import cancel_keyboard
 
 router = Router()
+PHOTO_DIR = Path("tmp_photos")
+PHOTO_DIR.mkdir(exist_ok=True)
 
 
 @router.message(Command("update"))
 async def start_update(message: Message, state: FSMContext):
-    """Start profile update"""
-    user = await user_storage_db.get_user_by_telegram_id(message.from_user.id)
-
-    if not user:
-        await message.answer(
-            "❌ Siz hali ro'yxatdan o'tmagansiz!\n\n"
-            "Avval ro'yxatdan o'ting: /register"
-        )
-        return
-
-    text = (
-        "🔄 <b>Ma'lumotlarni yangilash</b>\n\n"
-        "Nimani yangilashni xohlaysiz?\n\n"
-        "1️⃣ Pasport raqami\n"
-        "2️⃣ Rasm\n\n"
-        "Yangi <b>pasport raqamini</b> yuboring yoki\n"
-        "Yangi <b>rasmni</b> yuboring:"
-    )
-
-    await message.answer(text, reply_markup=cancel_keyboard())
-    await state.set_state(UpdateUser.waiting_for_update)
+    await message.answer("🪪 Pasport raqamingizni kiriting (rasmni yangilash uchun):")
+    await state.set_state(UpdateUser.waiting_for_passport)
 
 
-@router.message(UpdateUser.waiting_for_update, F.text == "❌ Bekor qilish")
-async def cancel_update(message: Message, state: FSMContext):
-    """Cancel update"""
-    await state.clear()
-    await message.answer("❌ Yangilash bekor qilindi.", reply_markup=None)
+@router.message(UpdateUser.waiting_for_passport)
+async def handle_passport(message: Message, state: FSMContext):
+    passport = message.text.strip().upper()
+    result = await find_user_in_all_devices(passport)
 
-
-@router.message(UpdateUser.waiting_for_update, F.photo)
-async def update_photo(message: Message, state: FSMContext):
-    """Update user photo"""
-    user = await user_storage_db.get_user_by_telegram_id(message.from_user.id)
-
-    if not user:
-        await message.answer("❌ Xatolik yuz berdi!")
-        await state.clear()
-        return
-
-    # Get new photo
-    new_photo_id = message.photo[-1].file_id
-
-    # Update user in DB
-    await user_storage_db.add_or_update_user(
-        telegram_id=user["telegram_id"],
-        full_name=user["full_name"],
-        passport=user["passport"],
-        photo_id=new_photo_id
-    )
+    if result["status"] == "not_found":
+        await message.answer("❌ Bunday foydalanuvchi tizimda topilmadi.")
+        return await state.clear()
 
     await message.answer(
-        "✅ <b>Rasm muvaffaqiyatli yangilandi!</b>\n\n"
-        "📸 Yangi rasmingiz saqlandi.",
-        reply_markup=None
+        f"✅ Topildi!\n📍 Qurilma: <code>{result['device']}</code>\n🆔 UID: <code>{result['uid']}</code>\n\n"
+        "📸 Endi yangi rasm yuboring:",
+        parse_mode="HTML"
     )
-    await state.clear()
+    await state.update_data(passport=passport, device=result["device"])
+    await state.set_state(UpdateUser.waiting_for_photo)
 
 
-@router.message(UpdateUser.waiting_for_update, F.text.regexp(r"^[A-Z]{2}\d{7}$"))
-async def update_passport(message: Message, state: FSMContext):
-    """Update passport number"""
-    user = await user_storage_db.get_user_by_telegram_id(message.from_user.id)
+@router.message(UpdateUser.waiting_for_photo, F.photo)
+async def handle_photo(message: Message, state: FSMContext):
+    data = await state.get_data()
+    passport = data["passport"]
+    device = data["device"]
 
-    if not user:
-        await message.answer("❌ Xatolik yuz berdi!")
-        await state.clear()
-        return
+    file = await message.bot.get_file(message.photo[-1].file_id)
+    photo_path = PHOTO_DIR / f"{passport}_{message.from_user.id}.jpg"
+    await message.bot.download_file(file.file_path, destination=str(photo_path))
 
-    new_passport = message.text.strip().upper()
+    await message.answer("⏳ Rasm yangilanmoqda...")
 
-    await user_storage_db.add_or_update_user(
-        telegram_id=user["telegram_id"],
-        full_name=user["full_name"],
-        passport=new_passport,
-        photo_id=user["photo_id"]
-    )
-
-    await message.answer(
-        f"✅ Pasport muvaffaqiyatli yangilandi!\n\n🪪 Yangi pasport: <code>{new_passport}</code>",
-        reply_markup=None
-    )
+    resp = await update_face_photo(device, passport, str(photo_path))
+    if resp.get("status") == "success":
+        await message.answer("✅ Rasm muvaffaqiyatli yangilandi!")
+    else:
+        await message.answer("⚠️ Xatolik: " + resp.get("msg", "unknown"))
     await state.clear()

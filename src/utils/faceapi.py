@@ -3,217 +3,275 @@ import asyncio
 import random
 import re
 from io import BytesIO
+from typing import List, Dict
+import aiofiles
 
-FACEGATE_HOST = "http://172.16.110.15"
+FACEID_HOSTS: List[str] = [
+    "http://172.16.110.15",
+    "http://172.16.110.18",
+    "http://172.16.110.21",
+    "http://172.16.110.23",
+    "http://172.16.110.14",
+    "http://172.16.110.19",
+    "http://172.16.110.20",
+    "http://172.16.110.24",
+]
+
 AUTH_HEADER_VALUE = "Basic YWRtaW46YWlmdTFxMnczZTRyQA=="
-from datetime import datetime
-
-async def get_users_stats():
-    """
-    FaceGate qurilmasidan foydalanuvchilar statistikasi olish:
-    - jami foydalanuvchilar
-    - bugun qo‘shilganlar
-    - duplicate foydalanuvchilar
-    """
-    url = f"{FACEGATE_HOST}/webs/getWhitelist"
-    headers = {"Authorization": AUTH_HEADER_VALUE}
-    params = {
-        "action": "list",
-        "group": "LIST",
-        "uflag": 0,
-        "usex": 1,
-        "uage": "0-100",
-        "MjCardNo": 0,
-        "begintime": "2023-01-01/00:00:00",
-        "endtime": "2030-01-01/23:59:59",
-        "utype": 3,
-        "sequence": 0,
-        "beginno": 0,
-        "reqcount": 200,  # yetarlicha ko‘p foydalanuvchi
-        "sessionid": 0,
-        "RanId": random.randint(10000000, 99999999),
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params) as resp:
-            text = await resp.text()
-            print("📊 getWhitelist RESPONSE:\n", text[:500])  # faqat boshi
-
-            # Jami foydalanuvchilar
-            total = re.search(r"root\.LIST\.totalcount=(\d+)", text)
-            total_count = int(total.group(1)) if total else 0
-
-            # Har bir foydalanuvchi
-            names = re.findall(r"root\.LIST\.ITEM\d+\.uname=([^\n\r]*)", text)
-            times = re.findall(r"root\.LIST\.ITEM\d+\.utime=([\d\-/:\s]*)", text)
-
-            # Bugungi sana
-            today = datetime.now().strftime("%Y-%m-%d")
-            today_count = sum(1 for t in times if today in t)
-
-            # Duplicate foydalanuvchilar
-            duplicates = len(names) - len(set(names))
-
-            return {
-                "status": "ok",
-                "total": total_count,
-                "today": today_count,
-                "duplicates": duplicates,
-            }
 
 
-async def login_and_get_session() -> aiohttp.ClientSession:
-    """Login qilib session qaytaradi"""
-    login_url = f"{FACEGATE_HOST}/webs/login"
-    headers = {"Authorization": AUTH_HEADER_VALUE}
-
+# =========================
+# Session login
+# =========================
+async def login_and_get_session(host: str) -> aiohttp.ClientSession:
     session = aiohttp.ClientSession()
-    async with session.get(login_url, headers=headers) as resp:
-        text = await resp.text()
-        print("🔑 Login response:", text.strip())
-        if "root.ERR.des=ok" not in text:
-            print("❌ Login muvaffaqiyatsiz!")
+    try:
+        url = f"{host}/webs/login"
+        headers = {"Authorization": AUTH_HEADER_VALUE}
+        async with session.get(url, headers=headers, timeout=10) as resp:
+            text = await resp.text()
+            print(f"[{host}] 🔑 Login javob: {text.strip()[:150]}")
+    except Exception as e:
+        print(f"[{host}] ❌ Login xatosi: {e}")
     return session
 
 
-async def upload_file(session: aiohttp.ClientSession, sessionid: int, photo_path: str) -> bool:
-    """Rasmni yuborish"""
-    url = f"{FACEGATE_HOST}/webs/uploadfile"
 
+# =========================
+# Faylni upload qilish va dwfilepos olish
+# =========================
+async def upload_file_safe(host: str, session: aiohttp.ClientSession, sessionid: int, photo_path: str) -> Dict[str, str] | None:
+    """Rasmni serverga upload qiladi va dwfilepos, dwfileindex, dwfiletype qaytaradi"""
+    url = f"{host}/webs/uploadfile"
     boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
-    body = BytesIO()
-    with open(photo_path, "rb") as f:
-        data = f.read()
 
-    # multipart/form-data
+    try:
+        async with aiofiles.open(photo_path, "rb") as f:
+            data = await f.read()
+    except Exception as e:
+        print(f"[{host}] ❌ Rasm o‘qilmadi: {e}")
+        return None
+
+    body = BytesIO()
     body.write(f"--{boundary}\r\n".encode())
     body.write(f'Content-Disposition: form-data; name="file"; filename="{photo_path.split("/")[-1]}"\r\n'.encode())
     body.write(b"Content-Type: image/jpeg\r\n\r\n")
     body.write(data)
     body.write(f"\r\n--{boundary}--\r\n".encode())
 
-    headers = {
-        "Authorization": AUTH_HEADER_VALUE,
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-    }
+    headers = {"Authorization": AUTH_HEADER_VALUE,
+               "Content-Type": f"multipart/form-data; boundary={boundary}"}
+    params = {"action": "LISTADD", "group": "UPLOAD", "sessionid": sessionid}
 
-    params = {
-        "action": "LISTADD",
-        "group": "UPLOAD",
-        "sessionid": sessionid,
-        "IsCheckSim": 0,
-    }
-
-    async with session.post(url, params=params, data=body.getvalue(), headers=headers) as resp:
-        text = await resp.text()
-        print("📤 Upload STATUS:", resp.status)
-        print("📤 Upload RESPONSE:", text.strip())
-        return resp.status == 200
-
-
-async def get_upload_position(session: aiohttp.ClientSession, sessionid: int):
-    """Upload foizini tekshirish va dwfilepos olish"""
-    url = f"{FACEGATE_HOST}/webs/getUploadPercent"
-    headers = {"Authorization": AUTH_HEADER_VALUE}
-
-    for i in range(15):
-        params = {
-            "action": "list",
-            "group": "UPLOAD",
-            "sessionid": sessionid,
-            "nRanId": random.randint(10000000, 99999999),
-        }
-
-        async with session.get(url, headers=headers, params=params) as resp:
+    try:
+        async with session.post(url, params=params, data=body.getvalue(), headers=headers, timeout=30) as resp:
             text = await resp.text()
-            print(f"🔁 getUploadPercent [{i+1}]:", text.strip())
+            if resp.status != 200:
+                print(f"[{host}] ❌ Upload failed, status={resp.status}")
+                return None
+    except Exception as e:
+        print(f"[{host}] ❌ Upload error: {e}")
+        return None
 
-            m_state = re.search(r"root\.UPLOAD\.state[=:\"]?(\d+)", text)
-            m_pos = re.search(r"root\.UPLOAD\.dwfilepos[=:\"]?(\d+)", text)
-            m_idx = re.search(r"root\.UPLOAD\.dwfileindex[=:\"]?(\d+)", text)
-            m_type = re.search(r"root\.UPLOAD\.dwfiletype[=:\"]?(\d+)", text)
+    # dwfilepos, dwfileindex, dwfiletype kutish
+    for _ in range(20):
+        try:
+            url_check = f"{host}/webs/getUploadPercent"
+            params_check = {"action": "list", "group": "UPLOAD", "sessionid": sessionid,
+                            "nRanId": random.randint(10000000, 99999999)}
+            async with session.get(url_check, headers={"Authorization": AUTH_HEADER_VALUE}, params=params_check, timeout=10) as resp:
+                text = await resp.text()
+                m_pos = re.search(r"root\.UPLOAD\.dwfilepos\s*=\s*(\d+)", text)
+                m_index = re.search(r"root\.UPLOAD\.dwfileindex\s*=\s*(\d+)", text)
+                m_type = re.search(r"root\.UPLOAD\.dwfiletype\s*=\s*(\d+)", text)
+                m_state = re.search(r"root\.UPLOAD\.state\s*=\s*(\d+)", text)
 
-            state = int(m_state.group(1)) if m_state else 0
-            dwfilepos = m_pos.group(1) if m_pos else None
-            dwfileindex = m_idx.group(1) if m_idx else "0"
-            dwfiletype = m_type.group(1) if m_type else "0"
+                dwfilepos = m_pos.group(1) if m_pos else None
+                dwfileindex = m_index.group(1) if m_index else None
+                dwfiletype = m_type.group(1) if m_type else None
+                state = int(m_state.group(1)) if m_state else 0
 
-            if state >= 100 and dwfilepos and int(dwfilepos) > 0:
-                print(f"✅ Upload tugadi. dwfilepos={dwfilepos}")
-                await asyncio.sleep(0.3)
-                return dwfilepos, dwfileindex, dwfiletype
-
+                if dwfilepos and dwfileindex and dwfiletype and state >= 100:
+                    return {"dwfilepos": dwfilepos, "dwfileindex": dwfileindex, "dwfiletype": dwfiletype}
+        except Exception:
+            pass
         await asyncio.sleep(1)
 
-    print("❌ Upload position topilmadi.")
-    return None, None, None
+    print(f"[{host}] ❌ dwfilepos topilmadi")
+    return None
+
+# =========================
+# Foydalanuvchini barcha qurilmalarda qidirish
+# =========================
+async def find_user_in_all_devices(passport: str) -> Dict:
+    passport = passport.strip().upper()
+    found = []
+    for host in FACEID_HOSTS:
+        try:
+            url = f"{host}/webs/getWhitelist"
+            params = {"action": "list", "group": "LIST", "uflag": 0, "Searchname": passport,
+                      "sequence": 1, "beginno": 0, "reqcount": 2, "sessionid": 0,
+                      "RanId": random.randint(10000000, 99999999)}
+            headers = {"Authorization": AUTH_HEADER_VALUE}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers, timeout=15) as resp:
+                    text = await resp.text()
+
+            uids = re.findall(r"root\.LIST\.ITEM\d+\.uid=(\d+)", text)
+            unames = re.findall(r"root\.LIST\.ITEM\d+\.uname=([^\r\n]*)", text)
+
+            for uid, uname in zip(uids, unames):
+                if uname.strip().upper() == passport:
+                    found.append({"host": host, "uid": uid})
+                    break
+
+            if not any(d["host"] == host for d in found) and f"uname={passport}" in text:
+                found.append({"host": host, "uid": None})
+
+        except Exception as e:
+            print(f"[{host}] ⚠️ Qidiruv xatolik: {e}")
+
+    return {"status": "found", "devices": found} if found else {"status": "not_found", "devices": []}
 
 
-async def add_user(session: aiohttp.ClientSession, passport: str, dwfilepos: str, dwfileindex: str, dwfiletype: str):
-    """FaceID qurilmaga yangi foydalanuvchi qo‘shish"""
-    url = f"{FACEGATE_HOST}/webs/setWhitelist"
-    headers = {
-        "Authorization": AUTH_HEADER_VALUE,
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
 
-    clean_name = passport.strip().replace(" ", "_")
-    params = {
-        "action": "add",
-        "group": "LIST",
-        "LIST.uid": -1,
-        "LIST.dwfiletype": int(dwfiletype),
-        "LIST.dwfileindex": int(dwfileindex),
-        "LIST.dwfilepos": dwfilepos,
-        "LIST.protocol": 1,
-        "LIST.publicMjCardNo": random.randint(1000, 9999),
-        "LIST.MjCardNo": random.randint(1000, 9999),
-        "LIST.uname": clean_name,
-        "LIST.ubirth": "2024-01-25",
-        "LIST.uvalidbegintime": "2025-01-25 00:00:00",
-        "LIST.uvalidendtime": "2030-01-30 23:59:59",
-        "LIST.uIsCheckSim": 1,
-        "LIST.uPermission": 0,
-        "LIST.ucardtype": 0,
-        "LIST.ulisttype": 3,
-        "LIST.utype": 3,
-        "LIST.uStatus": 4,
-        "nRanId": random.randint(10000000, 99999999),
-    }
+# =========================
+# Yangi foydalanuvchini qo‘shish
+# =========================
 
-    async with session.post(url, params=params, headers=headers) as resp:
-        text = await resp.text()
-        print("✅ AddUser RESPONSE:", text.strip())
-        return text
+async def send_to_faceid(passport: str, photo_path: str) -> dict:
+    passport_clean = passport.strip()
+    results = []
 
+    for host in FACEID_HOSTS:
+        session = await login_and_get_session(host)
+        sessionid = random.randint(10000000, 99999999)
+        try:
+            dwfile_data = await upload_file_safe(host, session, sessionid, photo_path)
+            if not dwfile_data:
+                results.append({"host": host, "status": "upload_failed"})
+                await session.close()
+                continue
 
-async def send_to_faceid(passport: str, photo_path: str):
-    """To‘liq FaceID jarayoni: login → upload → getpos → add"""
-    session = await login_and_get_session()
-    sessionid = random.randint(10000000, 99999999)
-    print(f"🚀 SessionID: {sessionid}")
+            url_add = f"{host}/webs/setWhitelist"
+            headers = {"Authorization": AUTH_HEADER_VALUE, "Content-Type": "application/x-www-form-urlencoded"}
+            params = {"action": "add", "group": "LIST", "LIST.uid": -1,
+                      "LIST.dwfilepos": dwfile_data["dwfilepos"],
+                      "LIST.dwfileindex": dwfile_data["dwfileindex"],
+                      "LIST.dwfiletype": dwfile_data["dwfiletype"],
+                      "LIST.protocol": 1, "LIST.uname": passport_clean, "LIST.utype": 3, "LIST.uStatus": 4,
+                      "nRanId": random.randint(10000000, 99999999)}
 
-    ok = await upload_file(session, sessionid, photo_path)
-    if not ok:
-        await session.close()
-        return {"status": "error", "msg": "upload_failed"}
+            async with session.post(url_add, params=params, headers=headers, timeout=20) as resp:
+                text = await resp.text()
+                ok = "root.ERR.des=ok" in text
+                results.append({"host": host, "status": "success" if ok else "add_failed", "resp": text[:150]})
+        except Exception as e:
+            results.append({"host": host, "status": "exception", "error": str(e)})
+        finally:
+            await session.close()
 
-    dwfilepos, dwfileindex, dwfiletype = await get_upload_position(session, sessionid)
-    if not dwfilepos:
-        await session.close()
-        return {"status": "error", "msg": "no_dwfilepos"}
-
-    add_resp = await add_user(session, passport, dwfilepos, dwfileindex, dwfiletype)
-    await session.close()
-
-    if "root.ERR.des=ok" in add_resp:
-        return {"status": "success", "msg": "user_added", "dwfilepos": dwfilepos}
-    else:
-        return {"status": "error", "msg": "add_failed", "resp": add_resp}
+    ok_hosts = [r["host"] for r in results if r["status"] == "success"]
+    return {"status": "success" if ok_hosts else "error",
+            "msg": f"{len(ok_hosts)}/{len(FACEID_HOSTS)} qurilmaga yuborildi",
+            "details": results}
 
 
-if __name__ == "__main__":
-    passport = "Dilnora_Xolmurodov"
-    photo_path = "tmp_photos/Dilnora_Xolmurodov.jpg"
-    result = asyncio.run(send_to_faceid(passport, photo_path))
-    print("\n🧾 NATIJA:", result)
+# =========================
+# Mavjud foydalanuvchi rasmini yangilash
+# =========================
+
+async def update_face_photo_all(passport: str, photo_path: str) -> dict:
+    found = await find_user_in_all_devices(passport)
+    if found["status"] != "found":
+        return {"status": "error", "msg": "user_not_found_on_any_device", "details": []}
+
+    results = []
+    for device in found["devices"]:
+        host = device["host"]
+        uid = device.get("uid")
+        session = await login_and_get_session(host)
+        sessionid = random.randint(10000000, 99999999)
+        try:
+            dwfile_data = await upload_file_safe(host, session, sessionid, photo_path)
+            if not dwfile_data:
+                results.append({"host": host, "status": "upload_failed"})
+                await session.close()
+                continue
+
+            if not uid:
+                url = f"{host}/webs/getWhitelist"
+                headers = {"Authorization": AUTH_HEADER_VALUE}
+                params = {"action": "list", "group": "LIST", "nPage": 1, "nPageSize": 1000}
+                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
+                    text = await resp.text()
+                uids = re.findall(r"root\.LIST\.ITEM\d+\.uid=(\d+)", text)
+                unames = re.findall(r"root\.LIST\.ITEM\d+\.uname=([^\r\n]*)", text)
+                for _uid, uname in zip(uids, unames):
+                    if uname.strip().upper() == passport.upper():
+                        uid = _uid
+                        break
+
+            if not uid:
+                results.append({"host": host, "status": "uid_not_found"})
+                await session.close()
+                continue
+
+            url_update = f"{host}/webs/setWhitelist"
+            headers = {"Authorization": AUTH_HEADER_VALUE, "Content-Type": "application/x-www-form-urlencoded"}
+            params = {"action": "update", "group": "LIST", "LIST.uid": uid, "LIST.uname": passport,
+                      "LIST.dwfilepos": dwfile_data["dwfilepos"],
+                      "LIST.dwfileindex": dwfile_data["dwfileindex"],
+                      "LIST.dwfiletype": dwfile_data["dwfiletype"],
+                      "LIST.uStatus": 4, "LIST.utype": 3,
+                      "nRanId": random.randint(10000000, 99999999)}
+
+            async with session.post(url_update, params=params, headers=headers, timeout=20) as resp:
+                text = await resp.text()
+                ok = "root.ERR.des=ok" in text
+                results.append({"host": host, "status": "success" if ok else "update_failed", "resp": text[:150]})
+        except Exception as e:
+            results.append({"host": host, "status": "exception", "error": str(e)})
+        finally:
+            await session.close()
+
+    ok_hosts = [r["host"] for r in results if r["status"] == "success"]
+    return {"status": "success" if ok_hosts else "error",
+            "msg": f"{len(ok_hosts)}/{len(found['devices'])} qurilmaga rasm yangilandi",
+            "details": results}
+
+
+from datetime import datetime
+async def get_users_stats():
+    total = 0
+    today_count = 0
+    names = []
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    for host in FACEID_HOSTS:
+        try:
+            url = f"{host}/webs/getWhitelist"
+            headers = {"Authorization": AUTH_HEADER_VALUE}
+            params = {"action": "list", "group": "LIST", "nPage": 1, "nPageSize": 1000,
+                      "nRanId": random.randint(10000000, 99999999)}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params, timeout=15) as resp:
+                    text = await resp.text()
+
+            total_match = re.search(r"root\.LIST\.totalcount=(\d+)", text)
+            count = int(total_match.group(1)) if total_match else 0
+            total += count
+
+            user_names = re.findall(r"root\.LIST\.ITEM\d+\.uname=([^\r\n]*)", text)
+            user_times = re.findall(r"root\.LIST\.ITEM\d+\.utime=([^\r\n]*)", text)
+
+            names.extend(user_names)
+            today_count += sum(1 for t in user_times if today in t)
+
+        except Exception as e:
+            print(f"[{host}] ⚠️ Statistika olishda xato: {e}")
+
+    duplicates = len(names) - len(set(names))
+
+    return {"status": "ok", "total": total, "today": today_count, "duplicates": duplicates}

@@ -181,64 +181,83 @@ async def send_to_faceid(passport: str, photo_path: str) -> dict:
 # Mavjud foydalanuvchi rasmini yangilash
 # =========================
 
-async def update_face_photo_all(passport: str, photo_path: str) -> dict:
-    found = await find_user_in_all_devices(passport)
-    if found["status"] != "found":
-        return {"status": "error", "msg": "user_not_found_on_any_device", "details": []}
+from datetime import datetime
 
+
+
+async def update_face_photo_all(passport: str, photo_path: str) -> dict:
+    """
+    Mavjud foydalanuvchini barcha qurilmalarda rasm bilan yangilash:
+    1. Avval uid orqali o'chirish
+    2. Keyin yangi user sifatida qo'shish (rassm bilan)
+    """
+    passport_clean = passport.strip().upper()
     results = []
-    for device in found["devices"]:
-        host = device["host"]
-        uid = device.get("uid")
+
+    for host in FACEID_HOSTS:
         session = await login_and_get_session(host)
         sessionid = random.randint(10000000, 99999999)
         try:
+            # 1️⃣ Qurilmadan uid olish
+            user_data = await get_user_data_from_device(host, passport_clean)
+            uid = user_data.get("uid") if user_data else None
+
+            # Agar uid topilsa, o'chirish
+            if uid:
+                url_delete = f"{host}/webs/setWhitelist"
+                headers = {"Authorization": AUTH_HEADER_VALUE, "Content-Type": "application/x-www-form-urlencoded"}
+                params_delete = {
+                    "action": "del",
+                    "group": "LIST",
+                    "LIST.uid": uid,
+                    "nRanId": random.randint(10000000, 99999999)
+                }
+                async with session.post(url_delete, params=params_delete, headers=headers, timeout=20) as resp_del:
+                    text_del = await resp_del.text()
+                    ok_del = "root.ERR.des=ok" in text_del
+                    if not ok_del:
+                        results.append({"host": host, "status": "delete_failed", "resp": text_del[:150]})
+                        continue  # Agar delete bo'lmasa, keyingi qadamga o‘tmaymiz
+
+            # 2️⃣ Rasmni yuklash
             dwfile_data = await upload_file_safe(host, session, sessionid, photo_path)
             if not dwfile_data:
                 results.append({"host": host, "status": "upload_failed"})
-                await session.close()
                 continue
 
-            if not uid:
-                url = f"{host}/webs/getWhitelist"
-                headers = {"Authorization": AUTH_HEADER_VALUE}
-                params = {"action": "list", "group": "LIST", "nPage": 1, "nPageSize": 1000}
-                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
-                    text = await resp.text()
-                uids = re.findall(r"root\.LIST\.ITEM\d+\.uid=(\d+)", text)
-                unames = re.findall(r"root\.LIST\.ITEM\d+\.uname=([^\r\n]*)", text)
-                for _uid, uname in zip(uids, unames):
-                    if uname.strip().upper() == passport.upper():
-                        uid = _uid
-                        break
+            # 3️⃣ Yangi user sifatida qo'shish
+            url_add = f"{host}/webs/setWhitelist"
+            params_add = {
+                "action": "add",
+                "group": "LIST",
+                "LIST.uid": -1,
+                "LIST.dwfilepos": dwfile_data["dwfilepos"],
+                "LIST.dwfileindex": dwfile_data["dwfileindex"],
+                "LIST.dwfiletype": dwfile_data["dwfiletype"],
+                "LIST.protocol": 1,
+                "LIST.uname": passport_clean,
+                "LIST.utype": 3,
+                "LIST.uStatus": 4,
+                "nRanId": random.randint(10000000, 99999999)
+            }
+            async with session.post(url_add, params=params_add, headers=headers, timeout=20) as resp_add:
+                text_add = await resp_add.text()
+                ok_add = "root.ERR.des=ok" in text_add
+                results.append({"host": host, "status": "success" if ok_add else "add_failed", "resp": text_add[:150]})
 
-            if not uid:
-                results.append({"host": host, "status": "uid_not_found"})
-                await session.close()
-                continue
-
-            url_update = f"{host}/webs/setWhitelist"
-            headers = {"Authorization": AUTH_HEADER_VALUE, "Content-Type": "application/x-www-form-urlencoded"}
-            params = {"action": "update", "group": "LIST", "LIST.uid": uid, "LIST.uname": passport,
-                      "LIST.dwfilepos": dwfile_data["dwfilepos"],
-                      "LIST.dwfileindex": dwfile_data["dwfileindex"],
-                      "LIST.dwfiletype": dwfile_data["dwfiletype"],
-                      "LIST.uStatus": 4, "LIST.utype": 3,
-                      "nRanId": random.randint(10000000, 99999999)}
-
-            async with session.post(url_update, params=params, headers=headers, timeout=20) as resp:
-                text = await resp.text()
-                ok = "root.ERR.des=ok" in text
-                results.append({"host": host, "status": "success" if ok else "update_failed", "resp": text[:150]})
         except Exception as e:
             results.append({"host": host, "status": "exception", "error": str(e)})
         finally:
             await session.close()
 
     ok_hosts = [r["host"] for r in results if r["status"] == "success"]
-    return {"status": "success" if ok_hosts else "error",
-            "msg": f"{len(ok_hosts)}/{len(found['devices'])} qurilmaga rasm yangilandi",
-            "details": results}
+    return {
+        "status": "success" if ok_hosts else "error",
+        "msg": f"{len(ok_hosts)}/{len(FACEID_HOSTS)} qurilmaga muvaffaqiyatli yangilandi",
+        "details": results
+    }
+
+
 
 
 from datetime import datetime
@@ -275,3 +294,248 @@ async def get_users_stats():
     duplicates = len(names) - len(set(names))
 
     return {"status": "ok", "total": total, "today": today_count, "duplicates": duplicates}
+
+
+async def sync_user_to_all_devices(passport: str, found_devices: list) -> dict:
+    """Mavjud foydalanuvchi ma'lumotlarini barcha qurilmalarga ko'chirish"""
+    passport_clean = passport.strip().upper()
+    results = []
+
+    # Topilgan qurilmalardan birining ma'lumotlarini olamiz
+    if not found_devices:
+        return {"status": "error", "msg": "No source devices found"}
+
+    source_device = found_devices[0]  # Birinchi topilgan qurilma ma'lumotlaridan foydalanamiz
+    source_host = source_device["host"]
+
+    # Manba qurilmadan foydalanuvchi ma'lumotlarini olamiz
+    source_user_data = await get_user_data_from_device(source_host, passport_clean)
+    if not source_user_data:
+        return {"status": "error", "msg": "Could not get user data from source device"}
+
+    # Barcha qurilmalarga ko'chiramiz
+    for host in FACEID_HOSTS:
+        # Agar bu qurilma allaqachon ma'lumotga ega bo'lsa, o'tkazib yuboramiz
+        if any(device["host"] == host for device in found_devices):
+            results.append({"host": host, "status": "already_exists", "action": "skip"})
+            continue
+
+        session = await login_and_get_session(host)
+        try:
+            # Foydalanuvchini qo'shamiz
+            url_add = f"{host}/webs/setWhitelist"
+            headers = {"Authorization": AUTH_HEADER_VALUE, "Content-Type": "application/x-www-form-urlencoded"}
+            params = {
+                "action": "add",
+                "group": "LIST",
+                "LIST.uid": -1,
+                "LIST.dwfilepos": source_user_data["dwfilepos"],
+                "LIST.dwfileindex": source_user_data["dwfileindex"],
+                "LIST.dwfiletype": source_user_data["dwfiletype"],
+                "LIST.protocol": 1,
+                "LIST.uname": passport_clean,
+                "LIST.utype": 3,
+                "LIST.uStatus": 4,
+                "nRanId": random.randint(10000000, 99999999)
+            }
+
+            async with session.post(url_add, params=params, headers=headers, timeout=20) as resp:
+                text = await resp.text()
+                ok = "root.ERR.des=ok" in text
+                results.append({
+                    "host": host,
+                    "status": "success" if ok else "add_failed",
+                    "action": "copy"
+                })
+
+        except Exception as e:
+            results.append({"host": host, "status": "exception", "error": str(e), "action": "copy"})
+        finally:
+            await session.close()
+
+    success_count = len([r for r in results if r["status"] == "success"])
+    return {
+        "status": "success" if success_count > 0 else "error",
+        "success_count": success_count,
+        "total_devices": len(FACEID_HOSTS),
+        "details": results
+    }
+
+
+async def get_user_data_from_device(host: str, passport: str) -> dict:
+    """Qurilmadan foydalanuvchi ma'lumotlarini olish"""
+    try:
+        url = f"{host}/webs/getWhitelist"
+        headers = {"Authorization": AUTH_HEADER_VALUE}
+        params = {
+            "action": "list",
+            "group": "LIST",
+            "Searchname": passport,
+            "sequence": 1,
+            "beginno": 0,
+            "reqcount": 10,
+            "sessionid": 0,
+            "RanId": random.randint(10000000, 99999999)
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers, timeout=10) as resp:
+                text = await resp.text()
+
+                # Foydalanuvchi ma'lumotlarini pars qilish
+                uids = re.findall(r"root\.LIST\.ITEM\d+\.uid=(\d+)", text)
+                unames = re.findall(r"root\.LIST\.ITEM\d+\.uname=([^\r\n]*)", text)
+                filepos_list = re.findall(r"root\.LIST\.ITEM\d+\.dwfilepos=(\d+)", text)
+                fileindex_list = re.findall(r"root\.LIST\.ITEM\d+\.dwfileindex=(\d+)", text)
+                filetype_list = re.findall(r"root\.LIST\.ITEM\d+\.dwfiletype=(\d+)", text)
+
+                for i, uname in enumerate(unames):
+                    if uname.strip().upper() == passport:
+                        return {
+                            "uid": uids[i] if i < len(uids) else None,
+                            "dwfilepos": filepos_list[i] if i < len(filepos_list) else "0",
+                            "dwfileindex": fileindex_list[i] if i < len(fileindex_list) else "0",
+                            "dwfiletype": filetype_list[i] if i < len(filetype_list) else "0"
+                        }
+    except Exception as e:
+        print(f"[{host}] ❌ Foydalanuvchi ma'lumotlarini olishda xato: {e}")
+
+    return None
+async def download_facefile_from_device(host: str, dwfilepos: str, dwfileindex: str, dwfiletype: str) -> bytes | None:
+    """
+    Source device'dan rasmni oladi va bytes qaytaradi
+    """
+    try:
+        import random
+        url = f"{host}/webs/getImage"
+        params = {
+            "action": "list",
+            "group": "IMAGE",
+            "dwfiletype": dwfiletype,
+            "dwfileindex": dwfileindex,
+            "dwfilepos": dwfilepos,
+            "RanId": random.randint(10000000, 99999999)
+        }
+        headers = {"Authorization": AUTH_HEADER_VALUE}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params, timeout=20) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+    except Exception as e:
+        print(f"[{host}] download_facefile error: {e}")
+    return None
+
+
+async def copy_user_to_missing_devices(passport: str) -> dict:
+    """
+    Mavjud foydalanuvchi profilini barcha qurilmalarga nusxalash (rassm bilan birga)
+    """
+    passport = passport.strip().upper()
+    found = await find_user_in_all_devices(passport)
+    if found["status"] != "found":
+        return {"status": "error", "msg": "user_not_found_on_any_device", "details": []}
+
+    existing_hosts = [d["host"] for d in found["devices"]]
+    missing_hosts = [h for h in FACEID_HOSTS if h not in existing_hosts]
+
+    if not missing_hosts:
+        return {"status": "ok", "msg": "All devices already have user", "details": []}
+
+    # Source device sifatida birinchi topilgan device
+    source_device = found["devices"][0]
+    source_host = source_device["host"]
+
+    # Source device'dan foydalanuvchi metadata ni olish
+    fileinfo = await get_user_data_from_device(source_host, passport)
+
+    if not fileinfo:
+        return {"status": "error", "msg": "Could not get user data from source device", "details": []}
+
+    # Rasmni olish
+    file_bytes = None
+    if fileinfo and fileinfo.get("dwfilepos"):
+        file_bytes = await download_facefile_from_device(
+            source_host,
+            fileinfo["dwfilepos"],
+            fileinfo.get("dwfileindex", "0"),
+            fileinfo.get("dwfiletype", "0")
+        )
+
+    results = []
+    for host in missing_hosts:
+        session = await login_and_get_session(host)
+        sessionid = random.randint(10000000, 99999999)
+        try:
+            if file_bytes:
+                # Vaqtinchalik fayl yaratib upload
+                import tempfile, os
+                tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                try:
+                    tmpf.write(file_bytes)
+                    tmpf.flush()
+                    tmp_path = tmpf.name
+                finally:
+                    tmpf.close()
+
+                # Rasmni yangi qurilmaga yuklash
+                dw = await upload_file_safe(host, session, sessionid, tmp_path)
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+                if not dw:
+                    results.append({"host": host, "status": "upload_failed"})
+                    await session.close()
+                    continue
+
+                # Add user bilan rasm metadata
+                url_add = f"{host}/webs/setWhitelist"
+                headers = {"Authorization": AUTH_HEADER_VALUE, "Content-Type": "application/x-www-form-urlencoded"}
+                params = {
+                    "action": "add",
+                    "group": "LIST",
+                    "LIST.uid": -1,
+                    "LIST.dwfilepos": dw["dwfilepos"],
+                    "LIST.dwfileindex": dw["dwfileindex"],
+                    "LIST.dwfiletype": dw["dwfiletype"],
+                    "LIST.protocol": 1,
+                    "LIST.uname": passport,
+                    "LIST.utype": 3,
+                    "LIST.uStatus": 4,
+                    "nRanId": random.randint(10000000, 99999999)
+                }
+                async with session.post(url_add, params=params, headers=headers, timeout=20) as resp:
+                    text = await resp.text()
+                    ok = "root.ERR.des=ok" in text
+                    results.append({"host": host, "status": "success" if ok else "add_failed"})
+            else:
+                # Rasm yo'q fallback: minimal add (rassmsiz)
+                url_add = f"{host}/webs/setWhitelist"
+                headers = {"Authorization": AUTH_HEADER_VALUE, "Content-Type": "application/x-www-form-urlencoded"}
+                params = {
+                    "action": "add",
+                    "group": "LIST",
+                    "LIST.uid": -1,
+                    "LIST.uname": passport,
+                    "LIST.utype": 3,
+                    "LIST.uStatus": 4,
+                    "nRanId": random.randint(10000000, 99999999)
+                }
+                async with session.post(url_add, params=params, headers=headers, timeout=20) as resp:
+                    text = await resp.text()
+                    ok = "root.ERR.des=ok" in text
+                    results.append({"host": host, "status": "success" if ok else "add_failed_nofile"})
+
+        except Exception as e:
+            results.append({"host": host, "status": "exception", "error": str(e)})
+        finally:
+            await session.close()
+
+    ok_hosts = [r["host"] for r in results if r["status"] == "success"]
+    return {
+        "status": "success" if ok_hosts else "error",
+        "msg": f"{len(ok_hosts)}/{len(missing_hosts)} qurilmaga nusxalandi",
+        "details": results
+    }

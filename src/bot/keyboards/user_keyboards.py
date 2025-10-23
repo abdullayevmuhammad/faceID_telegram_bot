@@ -1,26 +1,19 @@
-# src/bot/keyboards/user_keyboards.py
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Main menu keyboard"""
-    keyboard = [
-        [KeyboardButton(text="📝 Ro'yxatdan o'tish")],
-        [KeyboardButton(text="👤 Mening profilim")],
-        [KeyboardButton(text="ℹ️ Yordam")]
-    ]
+def cancel_keyboard() -> ReplyKeyboardMarkup:
+    """Bekor qilish uchun universal klaviatura"""
     return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        input_field_placeholder="Tanlang..."
+        keyboard=[[KeyboardButton(text="❌ Bekor qilish")]],
+        resize_keyboard=True
     )
 
-
-def cancel_keyboard() -> ReplyKeyboardMarkup:
-    """Cancel keyboard"""
-    keyboard = [
-        [KeyboardButton(text="❌ Bekor qilish")]
-    ]
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Asosiy menyu"""
     return ReplyKeyboardMarkup(
-        keyboard=keyboard,
+        keyboard=[
+            [KeyboardButton(text="🪪 Ro'yxatdan o'tish")],
+            [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="🔄 Ma'lumotni yangilash")],
+            [KeyboardButton(text="ℹ️ Yordam")]
+        ],
         resize_keyboard=True
     )

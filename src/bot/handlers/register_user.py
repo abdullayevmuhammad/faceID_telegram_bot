@@ -1,3 +1,5 @@
+from utils.db import add_user, get_user_by_id
+import asyncio
 import re
 from aiogram import Router, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
@@ -10,6 +12,9 @@ from pathlib import Path
 
 from utils.faceapi import FACEID_HOSTS
 
+from utils.db import is_user_registered
+
+from bot.keyboards.user_keyboards import main_menu_keyboard
 
 router = Router()
 PHOTO_DIR = Path("tmp_photos")
@@ -26,11 +31,36 @@ def get_choice_keyboard():
     )
 
 
+
 @router.message(Command("register"))
 async def start_register(message: Message, state: FSMContext):
-    await message.answer("🪪 Pasport raqamingizni kiriting (masalan: AB1234567):")
-    await state.set_state(RegisterUser.waiting_for_passport)
+    """Ro‘yxatdan o‘tishni boshlash"""
+    user = get_user_by_id(message.from_user.id)
 
+    # 1️⃣ Umuman yo‘q bo‘lsa — yangi foydalanuvchi
+    if not user:
+        await state.set_state(RegisterUser.waiting_for_passport)
+        await message.answer("🪪 Pasport raqamingizni kiriting:", reply_markup=cancel_keyboard())
+        return
+
+    # 2️⃣ Bor, lekin hali to‘liq ro‘yxatdan o‘tmagan
+    if not user["passport"] or not user["photo_id"]:
+        await state.set_state(RegisterUser.waiting_for_passport)
+        await message.answer(
+            "⚠️ Siz avval ro‘yxatdan o‘tishni boshlab, uni tugatmagansiz.\n"
+            "Iltimos, qayta davom ettiring.\n\n🪪 Pasport raqamingizni kiriting:",
+            reply_markup=cancel_keyboard()
+        )
+        return
+
+    # 3️⃣ To‘liq ro‘yxatdan o‘tgan
+    if is_user_registered(message.from_user.id):
+        return await message.answer(
+            "✅ Siz allaqachon ro‘yxatdan o‘tgan ekansiz.\n"
+            "Profilingizni ko‘rish uchun 👤 <b>Profilim</b> tugmasini bosing.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard()
+        )
 
 @router.message(RegisterUser.waiting_for_passport)
 async def handle_passport(message: Message, state: FSMContext):
@@ -39,13 +69,19 @@ async def handle_passport(message: Message, state: FSMContext):
         return await message.answer("❌ Noto'g'ri format! Masalan: <b>AB1234567</b>", parse_mode="HTML")
 
     await message.answer("🔍 Tizimda tekshirilmoqda...")
-
     result = await find_user_in_all_devices(passport)
 
     if result["status"] == "found":
-        # Agar kamida bitta deviceda topilsa
         found_devices = result["devices"]
         found_count = len(found_devices)
+        missing_hosts = [h for h in FACEID_HOSTS if h not in [d["host"] for d in found_devices]]
+
+        print(f"[INFO] {passport} topilgan qurilmalar: {[d['host'] for d in found_devices]}")
+        print(f"[INFO] {passport} yo‘q qurilmalar: {missing_hosts}")
+
+        if missing_hosts:
+            print(f"[SYNC] {passport} ma'lumotlari {len(missing_hosts)} ta qurilmaga ko‘chirilmoqda...")
+            asyncio.create_task(copy_user_to_missing_devices(passport))
 
         await message.answer(
             f"⚠️ <b>{passport}</b> tizimda mavjud!\n"
@@ -54,18 +90,12 @@ async def handle_passport(message: Message, state: FSMContext):
             parse_mode="HTML",
             reply_markup=get_choice_keyboard()
         )
-        await state.update_data(
-            passport=passport,
-            is_existing_user=True,
-            found_devices=found_devices
-        )
+        await state.update_data(passport=passport, is_existing_user=True, found_devices=found_devices)
         await state.set_state(RegisterUser.waiting_for_update_choice)
     else:
-        # Yangi foydalanuvchi
         await message.answer("✅ Yangi foydalanuvchi. Iltimos, rasm yuboring 📸")
         await state.update_data(passport=passport, is_existing_user=False)
         await state.set_state(RegisterUser.waiting_for_photo)
-
 
 
 @router.message(RegisterUser.waiting_for_update_choice,
@@ -138,6 +168,12 @@ async def handle_photo(message: Message, state: FSMContext):
             f"✅ Ma'lumotlar muvaffaqiyatli {action}!\n"
             f"📊 {success_count}/{len(FACEID_HOSTS)} qurilmaga {action}\n"
             f"{resp.get('msg', '')}"
+        )
+        add_user(
+            telegram_id=message.from_user.id,
+            passport=passport,
+            full_name=message.from_user.full_name,
+            photo_id=message.photo[-1].file_id
         )
     else:
         await message.answer(f"⚠️ Xatolik: {resp.get('msg', 'unknown')}")

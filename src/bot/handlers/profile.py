@@ -5,19 +5,21 @@ from utils.storage import user_storage
 
 router = Router()
 
+from utils.db import get_user_by_id
+
 @router.message(Command("profile"))
 async def profile_cmd(message: Message):
-    user = user_storage.get_user_by_telegram_id(message.from_user.id)
+    user = get_user_by_id(message.from_user.id)
     if not user:
         return await message.answer("❌ Siz hali ro‘yxatdan o‘tmagansiz.\n/register ni yuboring.")
 
     text = (
         f"👤 <b>Profilingiz:</b>\n"
+        f"🪪 Pasport: <b>{user['passport']}</b>\n"
         f"👥 Ism: {user['full_name']}\n"
-        f"🪪 Pasport: {user['passport']}\n"
-        f"📅 Ro‘yxatdan o‘tgan: {user['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
+        f"📅 Ro‘yxatdan o‘tgan: {user['created_at'][:19]}\n"
     )
-    await message.answer(text)
-
-    if user.get("photo_id"):
-        await message.answer_photo(user["photo_id"], caption="📸 Sizning rasmingiz")
+    if user["photo_id"]:
+        await message.answer_photo(user["photo_id"], caption=text)
+    else:
+        await message.answer(text)

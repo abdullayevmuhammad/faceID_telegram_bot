@@ -29,6 +29,8 @@ async def button_update(message: Message, state: FSMContext):
 # 🔹 Tugma: Admin panel
 @router.message(F.text == "📊 Admin panel")
 async def button_admin(message: Message):
+    print("Admin ID:", ADMIN_ID)
+    print("Foydalanuvchi ID:", message.from_user.id)
     if message.from_user.id != ADMIN_ID:
         await message.answer("🚫 Sizda admin panelga kirish huquqi yo'q.")
         return

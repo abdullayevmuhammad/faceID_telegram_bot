@@ -100,6 +100,8 @@ async def upload_file_safe(host: str, session: aiohttp.ClientSession, sessionid:
     print(f"[{host}] ❌ dwfilepos topilmadi")
     return None
 
+
+
 # =========================
 # Foydalanuvchini barcha qurilmalarda qidirish
 # =========================
@@ -538,4 +540,64 @@ async def copy_user_to_missing_devices(passport: str) -> dict:
         "status": "success" if ok_hosts else "error",
         "msg": f"{len(ok_hosts)}/{len(missing_hosts)} qurilmaga nusxalandi",
         "details": results
+    }
+
+import aiohttp
+import asyncio
+from datetime import datetime
+from typing import List
+
+FACEID_HOSTS = [
+    "http://172.16.110.14",
+    "http://172.16.110.15",
+    "http://172.16.110.18",
+    "http://172.16.110.19",
+    "http://172.16.110.20",
+    "http://172.16.110.21",
+    "http://172.16.110.23",
+    "http://172.16.110.24"
+]
+
+AUTH_HEADER = {"Authorization": "Basic YWRtaW46YWlmdTFxMnczZTRyQA=="}  # seni Postmandan olgan headering
+
+async def get_device_stats(session: aiohttp.ClientSession, host: str):
+    """Bitta qurilmadan statistikani olish"""
+    try:
+        url = f"{host}/webs/getWhitelist?action=list&group=LIST&nRanId=123456"
+        async with session.get(url, headers=AUTH_HEADER, timeout=5) as resp:
+            text = await resp.text()
+
+            # Ma’lumotni parse qilamiz (HTML-style javob)
+            users = []
+            for line in text.splitlines():
+                if "LIST[" in line and ".uid=" in line:
+                    users.append(line.strip())
+
+            total = len(users)
+
+            # bugungi sana bo‘yicha hisob
+            today = datetime.now().strftime("%Y-%m-%d")
+            today_count = sum(today in line for line in text.splitlines())
+
+            return {"host": host, "total": total, "today": today_count, "status": "ok"}
+
+    except Exception as e:
+        return {"host": host, "total": 0, "today": 0, "status": "error", "error": str(e)}
+
+
+async def get_users_stats():
+    """Barcha qurilmalardan foydalanuvchilar statistikasi"""
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(*(get_device_stats(session, h) for h in FACEID_HOSTS))
+
+    total_all = sum(r["total"] for r in results)
+    today_all = sum(r["today"] for r in results)
+
+    return {
+        "status": "ok",
+        "devices": results,
+        "summary": {
+            "total_all": total_all,
+            "today_all": today_all
+        }
     }

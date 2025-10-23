@@ -9,7 +9,8 @@ from bot.handlers import start
 from bot.handlers import register_user
 from bot.handlers import admin_panel
 from bot.handlers import profile
-from bot.handlers import update_photo, menu_actions
+from bot.handlers import update_photo, menu_actions, common
+from utils.db import init_db
 
 BOT_TOKEN = '8363824683:AAEzNvWQox8ALDQI3MKemZVpK3IvGNhtfgE'
 # from bot.config import BOT_TOKEN
@@ -21,6 +22,7 @@ logging.basicConfig(
 )
 
 async def main():
+    init_db()
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -35,6 +37,7 @@ async def main():
     dp.include_router(admin_panel.router)
     dp.include_router(profile.router)
     dp.include_router(update_photo.router)
+    dp.include_router(common.router)
 
     logging.info("🤖 Bot started successfully...")
     await bot.delete_webhook(drop_pending_updates=True)

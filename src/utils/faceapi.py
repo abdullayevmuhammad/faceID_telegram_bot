@@ -3,7 +3,7 @@ import asyncio
 import random
 import re
 from io import BytesIO
-from typing import List, Dict
+from typing import List, Dict, Optional
 import aiofiles
 
 FACEID_HOSTS: List[str] = [
@@ -263,39 +263,19 @@ async def update_face_photo_all(passport: str, photo_path: str) -> dict:
 
 
 from datetime import datetime
-async def get_users_stats():
-    total = 0
-    today_count = 0
-    names = []
+async def get_users_stats() -> dict:
+    """Barcha qurilmalardan statistikani parallel olish"""
+    tasks = [get_device_stats(h) for h in FACEID_HOSTS]
+    results = await asyncio.gather(*tasks)
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    total_all = sum(r.get("total", 0) for r in results)
+    today_all = sum(r.get("today", 0) for r in results)
 
-    for host in FACEID_HOSTS:
-        try:
-            url = f"{host}/webs/getWhitelist"
-            headers = {"Authorization": AUTH_HEADER_VALUE}
-            params = {"action": "list", "group": "LIST", "nPage": 1, "nPageSize": 1000,
-                      "nRanId": random.randint(10000000, 99999999)}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, params=params, timeout=15) as resp:
-                    text = await resp.text()
-
-            total_match = re.search(r"root\.LIST\.totalcount=(\d+)", text)
-            count = int(total_match.group(1)) if total_match else 0
-            total += count
-
-            user_names = re.findall(r"root\.LIST\.ITEM\d+\.uname=([^\r\n]*)", text)
-            user_times = re.findall(r"root\.LIST\.ITEM\d+\.utime=([^\r\n]*)", text)
-
-            names.extend(user_names)
-            today_count += sum(1 for t in user_times if today in t)
-
-        except Exception as e:
-            print(f"[{host}] ⚠️ Statistika olishda xato: {e}")
-
-    duplicates = len(names) - len(set(names))
-
-    return {"status": "ok", "total": total, "today": today_count, "duplicates": duplicates}
+    return {
+        "status": "ok",
+        "devices": results,
+        "summary": {"total_all": total_all, "today_all": today_all},
+    }
 
 
 async def sync_user_to_all_devices(passport: str, found_devices: list) -> dict:
@@ -403,12 +383,20 @@ async def get_user_data_from_device(host: str, passport: str) -> dict:
         print(f"[{host}] ❌ Foydalanuvchi ma'lumotlarini olishda xato: {e}")
 
     return None
-async def download_facefile_from_device(host: str, dwfilepos: str, dwfileindex: str, dwfiletype: str) -> bytes | None:
-    """
-    Source device'dan rasmni oladi va bytes qaytaradi
-    """
+
+
+from PIL import Image
+import io
+from typing import Optional
+
+async def download_facefile_from_device(
+    host: str,
+    dwfilepos: str,
+    dwfileindex: str,
+    dwfiletype: str
+) -> Optional[bytes]:
+    """FaceID qurilmadan foydalanuvchi rasmini yuklab olish (BMP, JPG, PNG qo‘llab-quvvatlanadi)"""
     try:
-        import random
         url = f"{host}/webs/getImage"
         params = {
             "action": "list",
@@ -421,12 +409,38 @@ async def download_facefile_from_device(host: str, dwfilepos: str, dwfileindex: 
         headers = {"Authorization": AUTH_HEADER_VALUE}
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params, timeout=20) as resp:
-                if resp.status == 200:
-                    return await resp.read()
+            async with session.get(url, headers=headers, params=params, timeout=15) as resp:
+                print(f"[DEBUG] {host} → status={resp.status}, content-type={resp.headers.get('Content-Type')}")
+                if resp.status != 200:
+                    return None
+
+                data = await resp.read()
+                print(f"[DEBUG] first bytes: {data[:30]}")
+
+                # 🔍 Fayl turini aniqlash
+                if data.startswith(b"\xff\xd8"):  # JPEG
+                    print(f"[✅] JPEG rasm yuklandi: {host}")
+                    return data
+                elif data.startswith(b"\x89PNG"):  # PNG
+                    print(f"[✅] PNG rasm yuklandi: {host}")
+                    return data
+                elif data.startswith(b"BM"):  # BMP
+                    print(f"[ℹ️] BMP rasm topildi ({len(data)} bayt), JPEG ga o‘tkazilmoqda...")
+                    try:
+                        img = Image.open(io.BytesIO(data))
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG")
+                        buf.seek(0)
+                        return buf.read()
+                    except Exception as e:
+                        print(f"[❌] BMP konvertatsiyada xato: {e}")
+                        return None
+                else:
+                    print(f"[WARN] Noma’lum fayl formati: {len(data)} bayt")
+                    return None
     except Exception as e:
-        print(f"[{host}] download_facefile error: {e}")
-    return None
+        print(f"[ERROR] download_facefile_from_device xato: {e}")
+        return None
 
 
 async def copy_user_to_missing_devices(passport: str) -> dict:
@@ -547,57 +561,116 @@ import asyncio
 from datetime import datetime
 from typing import List
 
-FACEID_HOSTS = [
-    "http://172.16.110.14",
-    "http://172.16.110.15",
-    "http://172.16.110.18",
-    "http://172.16.110.19",
-    "http://172.16.110.20",
-    "http://172.16.110.21",
-    "http://172.16.110.23",
-    "http://172.16.110.24"
-]
+
 
 AUTH_HEADER = {"Authorization": "Basic YWRtaW46YWlmdTFxMnczZTRyQA=="}  # seni Postmandan olgan headering
 
-async def get_device_stats(session: aiohttp.ClientSession, host: str):
-    """Bitta qurilmadan statistikani olish"""
+import re
+from datetime import datetime
+
+async def get_device_stats(host: str, timeout: int = 20) -> dict:
+    """
+    FaceID qurilmadan jami va bugungi foydalanuvchilar sonini olish.
+    To‘liq parametrlari bilan ishlaydi (Postmandagi kabi).
+    """
     try:
-        url = f"{host}/webs/getWhitelist?action=list&group=LIST&nRanId=123456"
-        async with session.get(url, headers=AUTH_HEADER, timeout=5) as resp:
+        from datetime import datetime, timedelta
+        session = await login_and_get_session(host)
+        today = datetime.now().strftime("%Y-%m-%d")
+        end_time = datetime.now().strftime("%Y-%m-%d/%H:%M:%S")
+        begin_time = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d/%H:%M:%S")
+
+        url = f"{host}/webs/getWhitelist"
+        params = {
+            "action": "list",
+            "group": "LIST",
+            "uflag": 0,
+            "usex": 1,
+            "uage": "0-100",
+            "MjCardNo": 0,
+            "begintime": begin_time,
+            "endtime": end_time,
+            "utype": 3,
+            "sequence": 0,
+            "beginno": 0,
+            "reqcount": 10000,
+            "sessionid": 0,
+            "RanId": random.randint(10000000, 99999999)
+        }
+
+        headers = {"Authorization": AUTH_HEADER_VALUE}
+
+        async with session.get(url, headers=headers, params=params, timeout=timeout) as resp:
             text = await resp.text()
 
-            # Ma’lumotni parse qilamiz (HTML-style javob)
-            users = []
-            for line in text.splitlines():
-                if "LIST[" in line and ".uid=" in line:
-                    users.append(line.strip())
+        await session.close()
 
-            total = len(users)
+        # 🔍 Parslash
+        total_match = re.search(r"root\.LIST\.totalcount\s*=\s*(\d+)", text)
+        total = int(total_match.group(1)) if total_match else 0
 
-            # bugungi sana bo‘yicha hisob
-            today = datetime.now().strftime("%Y-%m-%d")
-            today_count = sum(today in line for line in text.splitlines())
+        # utime larni yig‘ish
+        user_times = re.findall(r"root\.LIST\.ITEM\d+\.utime=([^\r\n]*)", text)
 
-            return {"host": host, "total": total, "today": today_count, "status": "ok"}
+        # Bugungi sanani tekshirish (ikkita format: YYYY-MM-DD/HH:mm:ss va YYYY/MM/DD)
+        today_str1 = datetime.now().strftime("%Y-%m-%d")
+        today_str2 = datetime.now().strftime("%Y/%m/%d")
+        today_count = sum(1 for t in user_times if today_str1 in t or today_str2 in t)
+
+        print(f"[{host}] 👤 Jami={total}, Bugun={today_count}, Topilgan vaqtlar={len(user_times)}")
+
+        return {
+            "host": host,
+            "status": "ok",
+            "total": total,
+            "today": today_count,
+        }
 
     except Exception as e:
-        return {"host": host, "total": 0, "today": 0, "status": "error", "error": str(e)}
+        try:
+            await session.close()
+        except Exception:
+            pass
+        print(f"[{host}] ❌ Statistika olishda xato: {e}")
+        return {
+            "host": host,
+            "status": "error",
+            "total": 0,
+            "today": 0,
+            "error": str(e)
+        }
 
 
-async def get_users_stats():
-    """Barcha qurilmalardan foydalanuvchilar statistikasi"""
-    async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(*(get_device_stats(session, h) for h in FACEID_HOSTS))
+# =========================
+# Barcha qurilmalarni test qilish
+# =========================
+async def test_api_connections() -> dict:
+    """Barcha FaceID qurilmalar bilan aloqani test qiladi"""
+    results = []
 
-    total_all = sum(r["total"] for r in results)
-    today_all = sum(r["today"] for r in results)
+    for host in FACEID_HOSTS:
+        try:
+            url = f"{host}/webs/login"
+            headers = {"Authorization": AUTH_HEADER_VALUE}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=5) as resp:
+                    text = await resp.text()
+                    if "root.ERR.des=ok" in text or resp.status == 200:
+                        results.append({"host": host, "status": "ok"})
+                    else:
+                        results.append({"host": host, "status": "fail", "msg": text[:100]})
+        except Exception as e:
+            results.append({"host": host, "status": "error", "msg": str(e)})
+
+    ok_count = len([r for r in results if r["status"] == "ok"])
+    fail_count = len([r for r in results if r["status"] != "ok"])
 
     return {
-        "status": "ok",
-        "devices": results,
-        "summary": {
-            "total_all": total_all,
-            "today_all": today_all
-        }
+        "status": "ok" if fail_count == 0 else "partial",
+        "ok": ok_count,
+        "fail": fail_count,
+        "details": results
     }
+
+
+

@@ -2,50 +2,55 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.client.default import DefaultBotProperties
-from bot.handlers import start
-from bot.handlers import register_user
-from bot.handlers import admin_panel
-from bot.handlers import profile
-from bot.handlers import update_photo, menu_actions, common
-from utils.db import init_db
+from bot.config import BOT_TOKEN, ADMIN_ID
+from utils.db import init_db, get_user_by_id, add_user, promote_to_admin, is_admin
+from bot.handlers import start, menu_actions, profile, update_photo, register_user, admin_panel
+from utils.faceapi import test_api_connections
 
-BOT_TOKEN = '8363824683:AAEzNvWQox8ALDQI3MKemZVpK3IvGNhtfgE'
-# from bot.config import BOT_TOKEN
-# from bot.handlers import start, register_user, check_user, admin_panel
+logging.basicConfig(level=logging.INFO)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s",
-)
+async def on_startup(bot: Bot):
+    """Bot ishga tushganda bajariladigan ishlar"""
+    print("🚀 Bot ishga tushmoqda...")
+
+    init_db()
+    print("📦 Database tayyor")
+
+    # 👑 Super adminni tekshirish yoki yaratish
+    admin = get_user_by_id(ADMIN_ID)
+    if not admin:
+        add_user(ADMIN_ID, passport="", full_name="Super Admin",  role="admin")
+        print(f"👑 ADMIN_ID={ADMIN_ID} qo‘shildi (admin sifatida).")
+    elif admin.get("role") != "admin":
+        promote_to_admin(ADMIN_ID)
+        print(f"🔁 ADMIN_ID={ADMIN_ID} admin qilib yangilandi.")
+    else:
+        print("✅ Super admin allaqachon mavjud.")
+
+    # 🌐 API test
+    test_result = await test_api_connections()
+    print(f"🌐 API test natijasi: {test_result}")
+
+    print("✅ Bot ishga tayyor!")
 
 async def main():
-    init_db()
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
-    dp = Dispatcher(storage=MemoryStorage())
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
 
-    # Handlers
+    # Routerni ulash
     dp.include_router(start.router)
     dp.include_router(menu_actions.router)
-    dp.include_router(register_user.router)
-    # dp.include_router(check_user.router)
-    dp.include_router(admin_panel.router)
     dp.include_router(profile.router)
     dp.include_router(update_photo.router)
-    dp.include_router(common.router)
+    dp.include_router(register_user.router)
+    dp.include_router(admin_panel.router)
 
-    logging.info("🤖 Bot started successfully...")
-    await bot.delete_webhook(drop_pending_updates=True)
-
-    # dp.include_router(start.router)
-    # dp.include_router(register_user.router)
-    # dp.include_router(admin_panel.router)
+    # Ishga tushirish
+    await on_startup(bot)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("🛑 Bot to‘xtatildi")

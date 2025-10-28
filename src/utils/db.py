@@ -109,7 +109,6 @@ def get_admins() -> List[Dict]:
 
 
 def promote_to_admin(telegram_id: int):
-    """Userni admin qilish"""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("UPDATE users SET role = 'admin' WHERE telegram_id = ?", (telegram_id,))
@@ -117,10 +116,20 @@ def promote_to_admin(telegram_id: int):
     conn.close()
 
 
-def demote_admin(telegram_id: int):
-    """Adminni oddiy userga qaytarish"""
+def demote_admin(telegram_id: int) -> bool:
+    """Adminni oddiy userga qaytarish (bor bo‘lsa True, topilmasa False)"""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("UPDATE users SET role = 'user' WHERE telegram_id = ?", (telegram_id,))
+    changed = cur.rowcount > 0   # ⚡️ Qancha qator o‘zgarganini tekshiramiz
     conn.commit()
     conn.close()
+    return changed
+
+def get_all_users():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT telegram_id FROM users")
+    users = cur.fetchall()
+    conn.close()
+    return [dict(u) for u in users]

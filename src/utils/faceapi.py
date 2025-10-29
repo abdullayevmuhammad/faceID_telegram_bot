@@ -40,7 +40,7 @@ async def login_and_get_session(host: str) -> aiohttp.ClientSession:
 # =========================
 # Faylni upload qilish va dwfilepos olish
 # =========================
-async def upload_file_safe(host: str, session: aiohttp.ClientSession, sessionid: int, photo_path: str) -> Dict[str, str] | None:
+async def upload_file_safe(host: str, session: aiohttp.ClientSession, sessionid: int, photo_path: str):
     """Rasmni serverga upload qiladi va dwfilepos, dwfileindex, dwfiletype qaytaradi"""
     url = f"{host}/webs/uploadfile"
     boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
@@ -732,6 +732,106 @@ async def test_api_connections() -> dict:
     }
 
 
+import aiohttp
+import asyncio
+import random
+import re
+import json
+
+async def delete_user_from_all_devices(passport: str) -> dict:
+    """
+    Foydalanuvchini barcha FaceID qurilmalardan o‘chiradi.
+    1. Har bir hostda login qiladi.
+    2. UID topadi.
+    3. UID orqali setWhitelist?action=del yuboradi.
+    """
+    passport_clean = passport.strip().upper()
+    results = []
+
+    for host in FACEID_HOSTS:
+        try:
+            print(f"\n=== 🔗 {host} bilan aloqa ===")
+
+            # 1️⃣ Login
+            session = aiohttp.ClientSession()
+            login_url = f"{host}/webs/login"
+            headers = {"Authorization": AUTH_HEADER_VALUE}
+            async with session.get(login_url, headers=headers, timeout=10) as r:
+                login_text = await r.text()
+            print(f"[{host}] 🔑 Login javobi: {login_text.strip()[:120]}")
+
+            # 2️⃣ Foydalanuvchini qidirish (uid olish)
+            url_get = f"{host}/webs/getWhitelist"
+            params_get = {
+                "action": "list",
+                "group": "LIST",
+                "Searchname": passport_clean,
+                "uflag": 0,
+                "utype": 3,
+                "sequence": 1,
+                "beginno": 0,
+                "reqcount": 10,
+                "sessionid": 0,
+                "RanId": random.randint(10000000, 99999999)
+            }
+
+            async with session.get(url_get, params=params_get, headers=headers, timeout=10) as resp:
+                text = await resp.text()
+                print(f"[{host}] 🔍 getWhitelist javobi (birinchi 200 belgi):\n{text.strip()[:200]}")
+
+            uid_match = re.search(r"root\.LIST\.ITEM\d+\.uid=(\d+)", text)
+            if not uid_match:
+                print(f"[{host}] ⚠️ {passport_clean} topilmadi.")
+                results.append({"host": host, "status": "not_found"})
+                await session.close()
+                continue
+
+            uid = uid_match.group(1)
+            print(f"[{host}] 🧾 UID topildi: {uid}")
+
+            # 3️⃣ O‘chirish
+            url_del = f"{host}/webs/setWhitelist"
+            params_del = {
+                "action": "del",
+                "group": "LIST",
+                "LIST.uid": uid,
+                "nRanId": random.randint(10000000, 99999999)
+            }
+
+            async with session.post(url_del, params=params_del, headers=headers, timeout=10) as resp_del:
+                text_del = await resp_del.text()
+                print(f"[{host}] 🗑️ O‘chirish javobi:\n{text_del.strip()[:200]}")
+
+                if "root.ERR.des=ok" in text_del:
+                    results.append({"host": host, "status": "success", "uid": uid})
+                elif "loginTimeout" in text_del:
+                    results.append({"host": host, "status": "timeout"})
+                else:
+                    results.append({"host": host, "status": "failed", "resp": text_del[:300]})
+
+            await session.close()
+
+        except Exception as e:
+            print(f"[{host}] ❌ Xato: {e}")
+            results.append({"host": host, "status": "error", "msg": str(e)})
+
+    # 🔚 Yakuniy natija
+    deleted = [r for r in results if r["status"] == "success"]
+    failed = [r for r in results if r["status"] in ["failed", "error", "timeout"]]
+    not_found = [r for r in results if r["status"] == "not_found"]
+
+    summary = {
+        "status": "success" if deleted else "error",
+        "msg": f"Muvaffaqiyatli: {len(deleted)}, topilmadi: {len(not_found)}, xato: {len(failed)}",
+        "details": results
+    }
+
+    print("\n=== 🧾 Yakuniy natija ===")
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+
+    return summary
+
+
 async def delete_from_faceid_all(passport: str) -> dict:
     """
     Foydalanuvchini barcha FaceID qurilmalardan o‘chiradi.
@@ -750,3 +850,55 @@ async def delete_from_faceid_all(passport: str) -> dict:
     ok_count = len([r for r in results if r["status"] == "success"])
     return {"status": "success" if ok_count > 0 else "error", "details": results}
 
+async def delete_user_from_device(host: str, passport: str) -> dict:
+    """
+    Foydalanuvchini bitta FaceID qurilmadan o‘chiradi (Postman so‘rovi bilan mos).
+    """
+    import aiohttp, random, re
+
+    headers = {
+        "Authorization": AUTH_HEADER_VALUE,
+    }
+
+    try:
+        # 1️⃣ UID ni topamiz
+        url_get = f"{host}/webs/getWhitelist"
+        params_get = {
+            "action": "list",
+            "group": "LIST",
+            "Searchname": passport,
+            "sequence": 1,
+            "beginno": 0,
+            "reqcount": 10,
+            "sessionid": 0,
+            "RanId": random.randint(10000000, 99999999)
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url_get, params=params_get, headers=headers, timeout=10) as resp:
+                text = await resp.text()
+
+            uid_match = re.search(r"root\.LIST\.ITEM\d+\.uid=(\d+)", text)
+            if not uid_match:
+                print(f"[{host}] ⚠️ {passport} uchun UID topilmadi")
+                return {"host": host, "passport": passport, "status": "not_found", "resp": text[:200]}
+
+            uid = uid_match.group(1)
+            print(f"[{host}] 🔍 UID topildi: {uid}")
+
+            # 2️⃣ Postmandagi kabi o‘chirish so‘rovi
+            url_del = f"{host}/webs/setWhitelist?action=del&group=LIST&LIST.uid={uid}&nRanId={random.randint(10000000,99999999)}"
+            async with session.post(url_del, headers=headers, timeout=15) as resp_del:
+                text_del = await resp_del.text()
+                print(f"[{host}] 🔁 DELETE javob: {text_del.strip()[:300]}")
+
+                if "root.ERR.des=ok" in text_del:
+                    return {"host": host, "passport": passport, "uid": uid, "status": "success"}
+                elif "loginTimeout" in text_del:
+                    return {"host": host, "passport": passport, "uid": uid, "status": "timeout"}
+                else:
+                    return {"host": host, "passport": passport, "uid": uid, "status": "failed", "resp": text_del[:300]}
+
+    except Exception as e:
+        print(f"[{host}] ❌ O‘chirishda xato: {e}")
+        return {"host": host, "passport": passport, "status": "error", "msg": str(e)}

@@ -9,5 +9,6 @@ def admin_main_keyboard():
         [InlineKeyboardButton(text="🗑 Adminni olib tashlash", callback_data="remove_admin")],
         [InlineKeyboardButton(text="🧍‍♂️ Foydalanuvchini o‘zgartirish", callback_data="edit_user")],
         [InlineKeyboardButton(text="➕ User qo‘shish", callback_data="add_user")],
+        [InlineKeyboardButton(text="🗑 Foydalanuvchini o‘chirish", callback_data="delete_user")],
         [InlineKeyboardButton(text="⬅️ Chiqish", callback_data="admin_exit")]
     ])

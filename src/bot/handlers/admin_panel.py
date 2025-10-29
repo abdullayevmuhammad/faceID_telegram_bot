@@ -207,16 +207,7 @@ async def cb_delete_user(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 
-@router.message(AdminManage.delete_user_wait_passport, F.text)
-async def admin_delete_user(message: Message, state: FSMContext):
-    passport = message.text.strip().upper()
-    res = await delete_from_faceid_all(passport)
-    if res["status"] == "success":
-        success = len([r for r in res["details"] if r["status"] == "success"])
-        await message.answer(f"🗑️ {passport} foydalanuvchi {success} qurilmadan muvaffaqiyatli o‘chirildi.")
-    else:
-        await message.answer(f"⚠️ O‘chirishda xatolik: {res.get('msg', 'Aniqlanmagan xato')}")
-    await state.clear()
+
 
 
 # =====================================================
@@ -275,3 +266,52 @@ async def cb_admin_exit(cq: CallbackQuery):
         await cq.message.answer("Admin panelga qaytish uchun:", reply_markup=admin_main_menu())
     else:
         await cq.answer("⛔ Siz admin emassiz", show_alert=True)
+
+from utils.faceapi import (
+    get_users_stats,
+    find_user_in_all_devices,
+    send_to_faceid,
+    update_face_photo_all,
+    delete_user_from_all_devices
+)
+@router.message(AdminManage.delete_user_wait_passport, F.text)
+async def admin_delete_user(message: Message, state: FSMContext):
+    from utils.faceapi import delete_user_from_all_devices
+
+    passport = message.text.strip().upper()
+    await message.answer("⏳ Foydalanuvchi barcha qurilmalardan o‘chirilmoqda, biroz kuting...")
+
+    try:
+        res = await delete_user_from_all_devices(passport)
+        status = res.get("status", "error")
+        msg = res.get("msg", "")
+        deleted = res.get("deleted", 0)
+        not_found = res.get("not_found", 0)
+        failed = res.get("failed", 0)
+        total = res.get("total", 0)
+
+        # 🔹 Har doim to‘liq natijani ko‘rsatamiz
+        details = "\n".join([f"{d['host']} → {d.get('status')}" for d in res.get("details", [])])
+
+        if status == "success":
+            text = (
+                f"✅ <b>{passport}</b> foydalanuvchi barcha qurilmalardan o‘chirildi.\n"
+                f"🧩 Qurilmalar: <b>{deleted}/{total}</b> muvaffaqiyatli.\n"
+                f"❌ Topilmadi: {not_found} | ⚠️ Xato: {failed}\n\n"
+                f"<i>{msg}</i>\n\n"
+                f"<code>{details}</code>"
+            )
+        else:
+            text = (
+                f"⚠️ O‘chirish yakunlandi, ammo to‘liq emas.\n\n"
+                f"📦 {msg}\n"
+                f"🧩 Qurilmalar: {deleted}/{total} muvaffaqiyatli, {failed} ta xato, {not_found} ta topilmadi.\n\n"
+                f"<code>{details}</code>"
+            )
+
+        await message.answer(text, parse_mode="HTML")
+
+    except Exception as e:
+        await message.answer(f"⚠️ Kutilmagan xatolik: {type(e).__name__} — {e}")
+
+    await state.clear()

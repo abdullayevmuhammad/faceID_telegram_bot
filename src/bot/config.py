@@ -1,21 +1,39 @@
-# src/bot/config.py
 import os
+import ast
 from dotenv import load_dotenv
 
+# .env faylni yuklaymiz
 load_dotenv()
 
-# Bot Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8363824683:AAEzNvWQox8ALDQI3MKemZVpK3IvGNhtfgE")
+# ======================
+# 🤖 Telegram Bot Sozlamalari
+# ======================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+print("ADMIN_ID:", ADMIN_ID, type(ADMIN_ID))
+# ADMIN_ID: 2007357355 <class 'int'>
 
-# Admin Configuration
-ADMIN_ID = int(os.getenv("ADMIN_ID", "2007357355"))
+# ======================
+# 🌐 FaceID API Sozlamalari
+# ======================
+FACEID_ENABLED = os.getenv("FACEID_ENABLED", "false").lower() == "true"
+FACEID_USERNAME = os.getenv("FACEID_USERNAME", "admin")
+FACEID_PASSWORD = os.getenv("FACEID_PASSWORD", "")
+FACEID_AUTH_HEADER = os.getenv("FACEID_AUTH_HEADER", "")
+FACEID_API_URL = os.getenv("FACEID_API_URL", "")
 
-# Face ID API Configuration (for future use)
-# FACEID_API_URL = os.getenv("FACEID_API_URL", "http://192.168.15.20/webs/getWhitelist")
-# FACEID_USERNAME = os.getenv("FACEID_USERNAME", "admin")
-# FACEID_PASSWORD = os.getenv("FACEID_PASSWORD", "aifu1q2w3e4r@")
+# 🧩 FACEID_HOSTS endi .env dagi Python list ko‘rinishidan o‘qiladi
+try:
+    FACEID_HOSTS = ast.literal_eval(os.getenv("FACEID_HOSTS", "[]"))
+    if not isinstance(FACEID_HOSTS, list):
+        raise ValueError("FACEID_HOSTS must be a list")
+except Exception as e:
+    print(f"⚠️ FACEID_HOSTS ni o‘qishda xato: {e}")
+    FACEID_HOSTS = []
 
-# FACEID_API_URL = "http://172.16.110.15/webs"
-FACEID_API_URL = os.getenv("FACEID_API_URL", "http://172.16.110.15/webs")
-FACEID_USERNAME = "admin"
-FACEID_PASSWORD = "aifu1q2w3e4r@"
+# ======================
+# ⚙️ Umumiy sozlamalar
+# ======================
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

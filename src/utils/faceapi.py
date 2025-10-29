@@ -1,25 +1,11 @@
 import aiohttp
-import asyncio
-import random
-import re
 from io import BytesIO
 from typing import List, Dict, Optional
 import aiofiles
 
-FACEID_HOSTS: List[str] = [
-    "http://172.16.110.15",
-    "http://172.16.110.18",
-    "http://172.16.110.21",
-    "http://172.16.110.23",
-    "http://172.16.110.14",
-    "http://172.16.110.19",
-    "http://172.16.110.20",
-    "http://172.16.110.24",
-]
+from bot.config import FACEID_AUTH_HEADER, FACEID_HOSTS
 
-AUTH_HEADER_VALUE = "Basic YWRtaW46YWlmdTFxMnczZTRyQA=="
-
-
+AUTH_HEADER_VALUE = FACEID_AUTH_HEADER
 # =========================
 # Session login
 # =========================

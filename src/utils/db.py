@@ -1,6 +1,6 @@
 import sqlite3
 from typing import Optional, Dict, List
-
+from bot.config import ADMIN_ID
 DB_PATH = "db.sqlite"
 
 
@@ -89,14 +89,18 @@ def is_user_registered(telegram_id: int) -> bool:
 # 👑 Adminlar
 # =====================================================
 def is_admin(telegram_id: int) -> bool:
-    """Adminligini tekshirish"""
+    # 1️⃣ .env dagi super admin — har doim kirish huquqiga ega
+    if telegram_id == ADMIN_ID:
+        return True
+
+    # 2️⃣ Bazadagi adminlar (users jadvalidagi role maydoni orqali)
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM users WHERE telegram_id = ? AND role = 'admin'", (telegram_id,))
-    res = cur.fetchone()
-    conn.close()
-    return res is not None
-
+    cur.execute(
+        "SELECT 1 FROM users WHERE telegram_id = ? AND role = 'admin'",
+        (telegram_id,),
+    )
+    return cur.fetchone() is not None
 
 def get_admins() -> List[Dict]:
     """Barcha adminlarni olish"""

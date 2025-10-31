@@ -11,7 +11,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 print("ADMIN_ID:", ADMIN_ID, type(ADMIN_ID))
-# ADMIN_ID: 2007357355 <class 'int'>
 
 # ======================
 # 🌐 FaceID API Sozlamalari
@@ -30,6 +29,12 @@ try:
 except Exception as e:
     print(f"⚠️ FACEID_HOSTS ni o‘qishda xato: {e}")
     FACEID_HOSTS = []
+
+# ======================
+# 🏫 CRM tizimi sozlamalari
+# ======================
+CRM_URL = os.getenv("CRM_URL", "https://crmapi.mentalaba.uz/v1/students/check-exists-by")
+UNIVERSITY_ID = int(os.getenv("UNIVERSITY_ID", "6"))
 
 # ======================
 # ⚙️ Umumiy sozlamalar

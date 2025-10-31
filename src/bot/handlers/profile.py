@@ -46,8 +46,8 @@ async def profile_cmd(message: Message):
     text = (
         f"👤 <b>{full_name}</b>\n"
         f"🪪 Pasport: <code>{passport}</code>\n"
-        f"🌐 Topilgan qurilmalar soni: <b>{len(devices)}</b>\n"
-        + "\n".join([f"✅ {d}" for d in devices])
+        # f"🌐 Topilgan qurilmalar soni: <b>{len(devices)}</b>\n"
+        # + "\n".join([f"✅ {d}" for d in devices])
     )
 
     # 🖼️ Suratni olish uchun birinchi topilgan qurilmadan foydalanamiz

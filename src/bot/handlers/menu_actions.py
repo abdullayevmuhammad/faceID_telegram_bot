@@ -49,6 +49,6 @@ async def button_help(message: Message):
         "👤 Profilim — o‘zingiz haqidagi ma’lumotni ko‘rish.\n"
         "🔄 Ma’lumotni yangilash — faqat rasmni yangilash.\n"
         "📊 Admin panel — faqat administratorlar uchun.\n\n"
-        "Savollar bo‘lsa: @admin bilan bog‘laning.",
+        "Savollar bo‘lsa: @ulugbekerkinov001 bilan bog‘laning.",
         parse_mode="HTML"
     )

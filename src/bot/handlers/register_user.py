@@ -124,7 +124,7 @@ async def handle_passport(message: Message, state: FSMContext):
     if not crm_exists:
         await message.answer(
             "❌ Siz bizning CRM tizimimizda mavjud emassiz.\n"
-            "Iltimos, admin bilan bog‘laning.",
+            "Iltimos, admin bilan bog‘laning:\n@ulugbekerkinov001",
             parse_mode="HTML",
             reply_markup=get_main_menu(message.from_user.id),
         )
